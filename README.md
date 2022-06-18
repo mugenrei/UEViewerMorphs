@@ -1,3 +1,6 @@
+Credit to oscateexor on LoversLab for the morph export code.
+Just making this repo to update it to a new version of umodel as it was last updated 2 years ago as far as i can tell.
+
 UE Viewer
 =========
 
