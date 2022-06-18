@@ -146,7 +146,7 @@ UIElement& UISettingsDialog::MakeExportOptions()
 					.AddItem("ActorX (pskx)", EExportMeshFormat::psk)
 					.AddItem("glTF 2.0", EExportMeshFormat::gltf)
 			]
-			+ NewControl(UICheckbox, "Export LODs", &Opt.Export.ExportMeshLods)
+			+ NewControl(UICheckbox, "Export Morphs", &Opt.Export.ExportMeshLods)
 		]
 		+ NewControl(UIGroup, "Texture Export")
 		[

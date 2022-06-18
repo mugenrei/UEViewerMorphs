@@ -323,7 +323,7 @@ static void CopyBoneName(char* Dst, int DstLen, const char* Src)
 	}
 }
 
-static void ExportSkeletalMeshLod(const CSkeletalMesh &Mesh, const CSkelMeshLod &Lod, FArchive &Ar)
+static void ExportSkeletalMeshLod(const CSkeletalMesh &Mesh, const CSkelMeshLod &Lod, FArchive &Ar, int MorphIndex)
 {
 	guard(ExportSkeletalMeshLod);
 
@@ -333,16 +333,51 @@ static void ExportSkeletalMeshLod(const CSkeletalMesh &Mesh, const CSkelMeshLod 
 	int i, j;
 	CVertexShare Share;
 
+	// Copy unmodified vertices
+	struct CSkelMeshVertex* MeshVerts = (CSkelMeshVertex*)appMalloc(sizeof(CSkelMeshVertex) * Lod.NumVerts, 16);
+	memcpy(MeshVerts, Lod.Verts, Lod.NumVerts * sizeof(CSkelMeshVertex));
+
+	if (MorphIndex >= 0)
+	{
+		// Copied from CSkelMeshInstance::BuildMorphVerts()
+		const TArray<CMorphVertex>& Deltas = Mesh.Morphs[MorphIndex]->Lods[0].Vertices;
+
+		// Apply deltas
+		for (const CMorphVertex& Delta : Deltas)
+		{
+			CSkelMeshVertex& V = MeshVerts[Delta.VertexIndex];
+			// Morph position
+			VectorAdd(V.Position, Delta.PositionDelta, V.Position);
+			// Morph normal (it will be discarded)
+			CVec3 Normal;
+			int8 W = V.Normal.GetW();
+			Unpack(Normal, V.Normal);
+			VectorAdd(Normal, Delta.NormalDelta, Normal);
+			Pack(V.Normal, Normal);
+			V.Normal.SetW(W);
+			// Adjust tangent vector to make basis orthonormal
+			CVec3 Tangent;
+			Unpack(Tangent, V.Tangent);
+			float shift = dot(Normal, Tangent); // it will be zero if vertices are perpendicular
+			VectorMA(Tangent, -shift, Normal);  // shift alongside the normal to make vertices perpendicular again
+			Tangent.NormalizeFast();            // ensure result is normalized
+			Pack(V.Tangent, Tangent);
+		}
+	}
+
 	// weld vertices
 	// The code below differs from similar code for StaticMesh export: it relies on vertex weight
 	// information to not perform occasional welding of vertices which has the same position and
 	// normal, but belongs to different bones.
 //	appResetProfiler();
-	guard(WeldVerts);
-	Share.Prepare(Lod.Verts, Lod.NumVerts, sizeof(CSkelMeshVertex));
+
+	//guard(WeldVerts);
+	//Share.Prepare(Lod.Verts, Lod.NumVerts, sizeof(CSkelMeshVertex));
+	Share.Prepare(MeshVerts, Lod.NumVerts, sizeof(CSkelMeshVertex));
+
 	for (i = 0; i < Lod.NumVerts; i++)
 	{
-		const CSkelMeshVertex &S = Lod.Verts[i];
+		const CSkelMeshVertex &S = MeshVerts[i];
 		// Here we relies on high possibility that vertices which should be shared between
 		// triangles will have the same order of weights and bones (because most likely
 		// these vertices were duplicated by copying). Doing more complicated comparison
@@ -353,7 +388,8 @@ static void ExportSkeletalMeshLod(const CSkeletalMesh &Mesh, const CSkelMeshLod 
 			WeightsHash ^= S.Bone[j] << j;
 		Share.AddVertex(S.Position, S.Normal, WeightsHash);
 	}
-	unguard;
+	//unguard;
+
 //	appPrintProfiler();
 //	appPrintf("%d wedges were welded into %d verts\n", Lod.NumVerts, Share.Points.Num());
 
@@ -463,37 +499,44 @@ void ExportPsk(const CSkeletalMesh *Mesh)
 		appNotify("Mesh %s has 0 lods", OriginalMesh->Name);
 		return;
 	}
-
-	int MaxLod = (GExportLods) ? Mesh->Lods.Num() : 1;
-	for (int Lod = 0; Lod < MaxLod; Lod++)
+	if (GExportLods && !Mesh->Morphs.Num())
 	{
-		guard(Lod);
+		appNotify("Mesh %s has 0 morphs", OriginalMesh->Name);
+		return;
+	}
 
-		const CSkelMeshLod &MeshLod = Mesh->Lods[Lod];
+	int MaxMorph = (GExportLods) ? Mesh->Morphs.Num() : 0;
+	for (int Morph = -1; Morph < MaxMorph; Morph++)
+	{
+		guard(Morph);
+
+		const CSkelMeshLod &MeshLod = Mesh->Lods[0];
 		if (!MeshLod.Sections.Num()) continue;		// empty mesh
 
 		bool UsePskx = (MeshLod.NumVerts > 65536);
 
 		char filename[512];
 		const char *Ext = (UsePskx) ? "pskx" : "psk";
-		if (Lod == 0)
+		if (Morph < 0)
 			appSprintf(ARRAY_ARG(filename), "%s.%s", OriginalMesh->Name, Ext);
 		else
-			appSprintf(ARRAY_ARG(filename), "%s_Lod%d.%s", OriginalMesh->Name, Lod, Ext);
+		{
+			appSprintf(ARRAY_ARG(filename), "%s_Morph%02d_%s.%s", OriginalMesh->Name, Morph, *Mesh->Morphs[Morph]->Name, Ext);
+		}
 
 		FArchive *Ar = CreateExportArchive(OriginalMesh, EFileArchiveOptions::Default, "%s", filename);
 		if (Ar)
 		{
-			ExportSkeletalMeshLod(*Mesh, MeshLod, *Ar);
+			ExportSkeletalMeshLod(*Mesh, MeshLod, *Ar, Morph);
 			delete Ar;
 		}
-		else if (Lod == 0)
+		else if (Morph == 0)
 		{
 			// First LOD was failed to be saved, most likely file already exists
 			return;
 		}
 
-		unguardf("%d", Lod);
+		unguardf("%d", Morph);
 	}
 
 	// export script file

@@ -142,12 +142,17 @@ struct CVertexShare
 		}
 #else
 		// find wedge with the same position and normal
+
+				// welding is disabled
+		/*
 		while (true)
 		{
 			PointIndex = Points.FindItem(Pos, PointIndex + 1);
 			if (PointIndex == INDEX_NONE) break;
 			if (Normals[PointIndex] == Normal && ExtraInfos[PointIndex] == ExtraInfo) break;
 		}
+		*/
+
 #endif // USE_HASHING
 		if (PointIndex == INDEX_NONE)
 		{

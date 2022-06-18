@@ -816,9 +816,45 @@ static void ExportAnimations(GLTFExportContext& Context, FArchive& Ar)
 	unguard;
 }
 
-static void ExportMeshLod(GLTFExportContext& Context, const CBaseMeshLod& Lod, const CMeshVertex* Verts, FArchive& Ar, FArchive& Ar2)
+static void ExportMeshLod(GLTFExportContext& Context, const CBaseMeshLod& Lod, const CMeshVertex* Verts, FArchive& Ar, FArchive& Ar2, int MorphIndex)
 {
 	guard(ExportMeshLod);
+
+	// Copy unmodified vertices (this feels like super unsafe but w/e)
+	//int VSize = Context.IsSkeletal() ? sizeof(CSkelMeshVertex) : sizeof(CStaticMeshVertex);
+	struct CSkelMeshVertex* MeshVerts = (CSkelMeshVertex*)appMalloc(sizeof(CSkelMeshVertex) * Lod.NumVerts, 16);
+	memcpy(MeshVerts, Verts, Lod.NumVerts * sizeof(CSkelMeshVertex));
+
+	// Apply morphs
+	if (Context.IsSkeletal() && MorphIndex >= 0)
+	{
+		// Copied from CSkelMeshInstance::BuildMorphVerts()
+		const TArray<CMorphVertex>& Deltas = Context.SkelMesh->Morphs[MorphIndex]->Lods[0].Vertices;
+
+		// Apply deltas
+		for (const CMorphVertex& Delta : Deltas)
+		{
+			//CMeshVertex& V = MeshVerts[Delta.VertexIndex];
+			CSkelMeshVertex& V = MeshVerts[Delta.VertexIndex];
+
+			// Morph position
+			VectorAdd(V.Position, Delta.PositionDelta, V.Position);
+			// Morph normal
+			CVec3 Normal;
+			int8 W = V.Normal.GetW();
+			Unpack(Normal, V.Normal);
+			VectorAdd(Normal, Delta.NormalDelta, Normal);
+			Pack(V.Normal, Normal);
+			V.Normal.SetW(W);
+			// Adjust tangent vector to make basis orthonormal
+			CVec3 Tangent;
+			Unpack(Tangent, V.Tangent);
+			float shift = dot(Normal, Tangent); // it will be zero if vertices are perpendicular
+			VectorMA(Tangent, -shift, Normal);  // shift alongside the normal to make vertices perpendicular again
+			Tangent.NormalizeFast();            // ensure result is normalized
+			Pack(V.Tangent, Tangent);
+		}
+	}
 
 	// Opening brace
 	Ar.Printf("{\n");
@@ -875,7 +911,7 @@ static void ExportMeshLod(GLTFExportContext& Context, const CBaseMeshLod& Lod, c
 	);
 	for (int i = 0; i < Lod.Sections.Num(); i++)
 	{
-		ExportSection(Context, Lod, Verts, i, Ar);
+		ExportSection(Context, Lod, MeshVerts, i, Ar);
 	}
 	Ar.Printf(
 		"      ],\n"
@@ -999,15 +1035,21 @@ void ExportSkeletalMeshGLTF(const CSkeletalMesh* Mesh)
 		appNotify("Mesh %s has 0 lods", OriginalMesh->Name);
 		return;
 	}
+	if (GExportLods && !Mesh->Morphs.Num())
+	{
+		appNotify("Mesh %s has 0 morphs", OriginalMesh->Name);
+		return;
+	}
 
-	int MaxLod = (GExportLods) ? Mesh->Lods.Num() : 1;
-	for (int Lod = 0; Lod < MaxLod; Lod++)
+	int MaxMorph = (GExportLods) ? Mesh->Morphs.Num() : 0;
+
+	for (int Morph = -1; Morph < MaxMorph; Morph++)
 	{
 		char suffix[32];
 		suffix[0] = 0;
-		if (Lod > 0)
+		if (Morph >= 0)
 		{
-			appSprintf(ARRAY_ARG(suffix), "_Lod%d", Lod);
+			appSprintf(ARRAY_ARG(suffix), "_Morph%02d_%s", Morph, *Mesh->Morphs[Morph]->Name);
 		}
 		char meshName[256];
 		appSprintf(ARRAY_ARG(meshName), "%s%s", OriginalMesh->Name, suffix);
@@ -1021,7 +1063,7 @@ void ExportSkeletalMeshGLTF(const CSkeletalMesh* Mesh)
 
 			FArchive* Ar2 = CreateExportArchive(OriginalMesh, EFileArchiveOptions::Default, "%s.bin", meshName);
 			assert(Ar2);
-			ExportMeshLod(Context, Mesh->Lods[Lod], Mesh->Lods[Lod].Verts, *Ar, *Ar2);
+			ExportMeshLod(Context, Mesh->Lods[0], Mesh->Lods[0].Verts, *Ar, *Ar2, Morph);
 			delete Ar;
 			delete Ar2;
 		}
@@ -1063,7 +1105,7 @@ void ExportStaticMeshGLTF(const CStaticMesh* Mesh)
 
 			FArchive* Ar2 = CreateExportArchive(OriginalMesh, EFileArchiveOptions::Default, "%s.bin", meshName);
 			assert(Ar2);
-			ExportMeshLod(Context, Mesh->Lods[Lod], Mesh->Lods[Lod].Verts, *Ar, *Ar2);
+			ExportMeshLod(Context, Mesh->Lods[Lod], Mesh->Lods[Lod].Verts, *Ar, *Ar2, -1);
 			delete Ar;
 			delete Ar2;
 		}
